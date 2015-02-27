@@ -50,6 +50,8 @@
       return ;
     }
 
+    this.cmisConnector = opts.cmisConnector;
+
     /**
      * Check if directory upload is supported
      * @type {boolean}
@@ -69,7 +71,7 @@
     this.defaults = {
       chunkSize: 1024 * 1024,
       forceChunkSize: false,
-      simultaneousUploads: 3,
+      simultaneousUploads: 1,
       singleFile: false,
       fileParameterName: 'file',
       progressCallbacksInterval: 500,
@@ -282,49 +284,18 @@
      * @private
      */
     uploadNextChunk: function (preventEvents) {
-      // In some cases (such as videos) it's really handy to upload the first
-      // and last chunk of a file quickly; this let's the server check the file's
-      // metadata and determine if there's even a point in continuing.
-      var found = false;
-      if (this.opts.prioritizeFirstAndLastChunk) {
-        each(this.files, function (file) {
-          if (!file.paused && file.chunks.length &&
-            file.chunks[0].status() === 'pending' &&
-            file.chunks[0].preprocessState === 0) {
-            file.chunks[0].send();
-            found = true;
-            return false;
-          }
-          if (!file.paused && file.chunks.length > 1 &&
-            file.chunks[file.chunks.length - 1].status() === 'pending' &&
-            file.chunks[0].preprocessState === 0) {
-            file.chunks[file.chunks.length - 1].send();
-            found = true;
-            return false;
-          }
-        });
-        if (found) {
-          return found;
-        }
-      }
-
-      // Now, simply look for the next, best thing to upload
-      each(this.files, function (file) {
+      // firstly check - if there is anything to upload
+      for (var i = 0; i < this.files.length; i++) {
+        var file = this.files[i];
         if (!file.paused) {
-          each(file.chunks, function (chunk) {
+          for (var j = 0; j < file.chunks.length; j++) {
+            var chunk = file.chunks[j];
             if (chunk.status() === 'pending' && chunk.preprocessState === 0) {
               chunk.send();
-              found = true;
-              return false;
+              return true;
             }
-          });
+          }
         }
-        if (found) {
-          return false;
-        }
-      });
-      if (found) {
-        return true;
       }
 
       // The are no more outstanding chunks to upload, check is everything is done
@@ -451,45 +422,19 @@
     },
 
     /**
-     * should upload next chunk
-     * @function
-     * @returns {boolean|number}
-     */
-    _shouldUploadNext: function () {
-      var num = 0;
-      var should = true;
-      var simultaneousUploads = this.opts.simultaneousUploads;
-      each(this.files, function (file) {
-        each(file.chunks, function(chunk) {
-          if (chunk.status() === 'uploading') {
-            num++;
-            if (num >= simultaneousUploads) {
-              should = false;
-              return false;
-            }
-          }
-        });
-      });
-      // if should is true then return uploading chunks's length
-      return should && num;
-    },
-
-    /**
      * Start or resume uploading.
      * @function
      */
     upload: function () {
-      // Make sure we don't start too many uploads at once
-      var ret = this._shouldUploadNext();
-      if (ret === false) {
-        return;
+      if (!this.cmisConnector.hasActiveSession()) {
+        this.cmisConnector.createSession(function() {
+          this.upload();
+        }.bind(this));
+        return false;
       }
-      // Kick off the queue
+
       this.fire('uploadStart');
-      var started = false;
-      for (var num = 1; num <= this.opts.simultaneousUploads - ret; num++) {
-        started = this.uploadNextChunk(true) || started;
-      }
+      var started = this.uploadNextChunk(true);
       if (!started) {
         async(function () {
           this.fire('complete');
@@ -773,6 +718,14 @@
   }
 
   FlowFile.prototype = {
+
+    /**
+     * Create File using CMIS
+     */
+    createCmisFile: function(callback) {
+      this.flowObj.cmisConnector.createFile(this, callback);
+    },
+
     /**
      * Update speed parameters
      * @link http://stackoverflow.com/questions/2779600/how-to-estimate-download-time-remaining-accurately
@@ -1122,8 +1075,7 @@
      */
     this.xhr = null;
 
-    if (this.fileObjSize - this.endByte < chunkSize &&
-        !this.flowObj.opts.forceChunkSize) {
+    if (this.fileObjSize - this.endByte < chunkSize && !this.flowObj.opts.forceChunkSize) {
       // The last chunk will be bigger than the chunk size,
       // but less than 2*chunkSize
       this.endByte = this.fileObjSize;
@@ -1274,10 +1226,6 @@
             return;
         }
       }
-      if (this.flowObj.opts.testChunks && !this.tested) {
-        this.test();
-        return;
-      }
 
       this.loaded = 0;
       this.total = 0;
@@ -1289,15 +1237,16 @@
             'slice')));
       var bytes = this.fileObj.file[func](this.startByte, this.endByte, this.fileObj.file.type);
 
-      // Set up request and listen for event
-      this.xhr = new XMLHttpRequest();
-      this.xhr.upload.addEventListener('progress', this.progressHandler, false);
-      this.xhr.addEventListener("load", this.doneHandler, false);
-      this.xhr.addEventListener("error", this.doneHandler, false);
+      if (!this.fileObj.cmisId) {
+        this.fileObj.createCmisFile(function() {
+          this.flowObj.cmisConnector.appendFileChunk(this.fileObj, bytes);
+        }.bind(this));
+      }
+      else {
+        this.flowObj.cmisConnector.appendFileChunk(this.fileObj, bytes);
+      }
 
-      var uploadMethod = evalOpts(this.flowObj.opts.uploadMethod, this.fileObj, this);
-      var data = this.prepareXhrRequest(uploadMethod, false, this.flowObj.opts.method, bytes);
-      this.xhr.send(data);
+
     },
 
     /**
