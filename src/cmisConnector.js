@@ -3,7 +3,7 @@
  */
 (function(window) {'use strict';
 
-  function CmisUploadConnector(url, username, password) {
+  function CmisConnector(url, username, password) {
     /**
      * CmisJS session object
      * @type {CmisSession}
@@ -24,7 +24,7 @@
     this.disableHttps = true;
   }
 
-  CmisUploadConnector.prototype = {
+  CmisConnector.prototype = {
 
     hasActiveSession: function() {
       return !!this.session;
@@ -33,9 +33,9 @@
     /**
      * Create CMISJS session
      */
-    createSession: function(callback) {
+    createSession: function(callbackOk) {
       var session = this.session = cmis.createSession(this.url);
-      session.setGlobalHandlers(console.log, console.log);
+      session.setGlobalHandlers(console.warn, console.error);
       session.setCredentials(this.username, this.password).loadRepositories()
         .ok(function () {
           if (this.disableHttps) {    // temp solution - to disable https while testing
@@ -44,7 +44,7 @@
           }
           session.getObjectByPath('/').ok(function (data) {
             this.currentFolderId = data.succinctProperties['cmis:objectId'];
-            callback();
+            callbackOk();
           }.bind(this));
         }.bind(this));
     },
@@ -52,44 +52,46 @@
     /**
      * Create CmisJS document
      * @param flowFile
-     * @param parentId
      * @param callback
      */
-    createFile: function(flowFile, callback) {
-      var documentContent = "";
+    createFile: function(flowFile, documentContent, callback) {
       var access = {};
       var type = flowFile.type || 'text/plain';
       access[this.username] = ['cmis:read'];
-      this.session.createDocument(this.currentFolderId, documentContent, flowFile.name, type, undefined, undefined, access, null, null).ok(function (data) {
-        flowFile.cmisId = data.succinctProperties['cmis:objectId'];
-        callback(true);
-      });
+      this.session.createDocument(this.currentFolderId, documentContent, flowFile.name, type, undefined, undefined, access, null, null)
+        .ok(function (data) {
+          flowFile.cmisId = data.succinctProperties['cmis:objectId'];
+          callback.call(null, 'success', data);
+        })
+        .notOk(callback.bind(null, 'pending'))
+        .error(callback.bind(null, 'pending'));
     },
 
     /**
      * Append File chunk to file
      * @param flowFile
      * @param bytes
-     * @returns {CmisRequest}
+     * @param callback
      */
-    appendFileChunk: function(flowFile, bytes) {
-      this.session.appendContentStream(flowFile.cmisId, bytes, true).ok(function() {
-        console.log('ok');
-      });
+    appendFileChunk: function(flowFile, bytes, isLastChunk, callback) {
+      this.session.appendContentStream(flowFile.cmisId, bytes, isLastChunk)
+        .ok(callback.bind(null, 'success'))
+        .notOk(callback.bind(null, 'pending'))
+        .error(callback.bind(null, 'pending'));
     }
 
   };
 
   if ( typeof module === "object" && module && typeof module.exports === "object" ) {
     // Node module
-    module.exports = CmisUploadConnector;
+    module.exports = CmisConnector;
   } else {
     // Otherwise expose Flow to the global object as usual
-    window.CmisUploadConnector = CmisUploadConnector;
+    window.CmisConnector = CmisConnector;
 
     // Register as a named AMD module
     if ( typeof define === "function" && define.amd ) {
-      define( "CmisUploadConnector", [], function () { return Flow; } );
+      define( "CmisConnector", [], function () { return Flow; } );
     }
   }
 

@@ -14,7 +14,8 @@ var app = angular.module('app', ['flow'])
     maxChunkRetries: 1,
     chunkRetryInterval: 5000,
     simultaneousUploads: 4,
-    cmisConnector: new window.CmisUploadConnector()
+    cmisConnector: new window.CmisConnector(),
+    chunkSize: 1024 * 8192
   };
   flowFactoryProvider.on('catchAll', function (event) {
     console.log('catchAll', arguments);

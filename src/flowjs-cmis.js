@@ -290,7 +290,7 @@
         if (!file.paused) {
           for (var j = 0; j < file.chunks.length; j++) {
             var chunk = file.chunks[j];
-            if (chunk.status() === 'pending' && chunk.preprocessState === 0) {
+            if (chunk.getStatus() === 'pending' && chunk.preprocessState === 0) {
               chunk.send();
               return true;
             }
@@ -720,13 +720,6 @@
   FlowFile.prototype = {
 
     /**
-     * Create File using CMIS
-     */
-    createCmisFile: function(callback) {
-      this.flowObj.cmisConnector.createFile(this, callback);
-    },
-
-    /**
      * Update speed parameters
      * @link http://stackoverflow.com/questions/2779600/how-to-estimate-download-time-remaining-accurately
      * @function
@@ -820,8 +813,7 @@
         this.chunks = [];
       }
       each(chunks, function (c) {
-        if (c.status() === 'uploading') {
-          c.abort();
+        if (c.getStatus() === 'uploading') {
           this.flowObj.uploadNextChunk();
         }
       }, this);
@@ -897,7 +889,7 @@
     isUploading: function () {
       var uploading = false;
       each(this.chunks, function (chunk) {
-        if (chunk.status() === 'uploading') {
+        if (chunk.getStatus() === 'uploading') {
           uploading = true;
           return false;
         }
@@ -913,7 +905,7 @@
     isComplete: function () {
       var outstanding = false;
       each(this.chunks, function (chunk) {
-        var status = chunk.status();
+        var status = chunk.getStatus();
         if (status === 'pending' || status === 'uploading' || chunk.preprocessState === 1) {
           outstanding = true;
           return false;
@@ -1016,10 +1008,10 @@
     this.offset = offset;
 
     /**
-     * Indicates if chunk existence was checked on the server
-     * @type {boolean}
+     * Current chunk status
+     * @type {string} 'pending', 'uploading', 'success', 'error'
      */
-    this.tested = false;
+    this.currentStatus = 'pending';
 
     /**
      * Number of retries performed
@@ -1069,12 +1061,6 @@
      */
     this.endByte = Math.min(this.fileObjSize, (this.offset + 1) * chunkSize);
 
-    /**
-     * XMLHttpRequest
-     * @type {XMLHttpRequest}
-     */
-    this.xhr = null;
-
     if (this.fileObjSize - this.endByte < chunkSize && !this.flowObj.opts.forceChunkSize) {
       // The last chunk will be bigger than the chunk size,
       // but less than 2*chunkSize
@@ -1082,7 +1068,6 @@
     }
 
     var $ = this;
-
 
     /**
      * Send chunk event
@@ -1094,52 +1079,19 @@
       args.unshift($);
       $.fileObj.chunkEvent.apply($.fileObj, args);
     };
-    /**
-     * Catch progress event
-     * @param {ProgressEvent} event
-     */
-    this.progressHandler = function(event) {
-      if (event.lengthComputable) {
-        $.loaded = event.loaded ;
-        $.total = event.total;
-      }
-      $.event('progress', event);
-    };
-
-    /**
-     * Catch test event
-     * @param {Event} event
-     */
-    this.testHandler = function(event) {
-      var status = $.status(true);
-      if (status === 'error') {
-        $.event(status, $.message());
-        $.flowObj.uploadNextChunk();
-      } else if (status === 'success') {
-        $.tested = true;
-        $.event(status, $.message());
-        $.flowObj.uploadNextChunk();
-      } else if (!$.fileObj.paused) {
-        // Error might be caused by file pause method
-        // Chunks does not exist on the server side
-        $.tested = true;
-        $.send();
-      }
-    };
 
     /**
      * Upload has stopped
-     * @param {Event} event
      */
-    this.doneHandler = function(event) {
-      var status = $.status();
+    this.doneHandler = function(status, response) {
+      $.currentStatus = status;
+      var message = response ? response.text : "OK";
       if (status === 'success' || status === 'error') {
-        $.event(status, $.message());
+        $.event(status, message);
         $.flowObj.uploadNextChunk();
       } else {
-        $.event('retry', $.message());
+        $.event('retry', message);
         $.pendingRetry = true;
-        $.abort();
         $.retries++;
         var retryInterval = $.flowObj.opts.chunkRetryInterval;
         if (retryInterval !== null) {
@@ -1172,45 +1124,6 @@
     },
 
     /**
-     * Get target option with query params
-     * @function
-     * @param params
-     * @returns {string}
-     */
-    getTarget: function(target, params){
-      if(target.indexOf('?') < 0) {
-        target += '?';
-      } else {
-        target += '&';
-      }
-      return target + params.join('&');
-    },
-
-    /**
-     * Makes a GET request without any data to see if the chunk has already
-     * been uploaded in a previous session
-     * @function
-     */
-    test: function () {
-      // Set up request and listen for event
-      this.xhr = new XMLHttpRequest();
-      this.xhr.addEventListener("load", this.testHandler, false);
-      this.xhr.addEventListener("error", this.testHandler, false);
-      var testMethod = evalOpts(this.flowObj.opts.testMethod, this.fileObj, this);
-      var data = this.prepareXhrRequest(testMethod, true);
-      this.xhr.send(data);
-    },
-
-    /**
-     * Finish preprocess state
-     * @function
-     */
-    preprocessFinished: function () {
-      this.preprocessState = 2;
-      this.send();
-    },
-
-    /**
      * Uploads the actual data in a POST call
      * @function
      */
@@ -1238,28 +1151,29 @@
       var bytes = this.fileObj.file[func](this.startByte, this.endByte, this.fileObj.file.type);
 
       if (!this.fileObj.cmisId) {
-        this.fileObj.createCmisFile(function() {
-          this.flowObj.cmisConnector.appendFileChunk(this.fileObj, bytes);
-        }.bind(this));
+        this.createCmisFile(bytes);
       }
       else {
-        this.flowObj.cmisConnector.appendFileChunk(this.fileObj, bytes);
+        this.appendFileChunk(bytes);
       }
-
-
     },
 
     /**
-     * Abort current xhr request
-     * @function
+     * Create File using CMIS
+     * @param bytes
      */
-    abort: function () {
-      // Abort and reset
-      var xhr = this.xhr;
-      this.xhr = null;
-      if (xhr) {
-        xhr.abort();
-      }
+    createCmisFile: function(bytes) {
+      this.flowObj.cmisConnector.createFile(this.fileObj, bytes, this.doneHandler);
+    },
+
+    /**
+     * Append file chunk bytes using cmis
+     * @param bytes
+     */
+    appendFileChunk: function(bytes) {
+      this.setStatus('uploading');
+      var isLastChunk = false;//this.fileObjSize === this.endByte;
+      this.flowObj.cmisConnector.appendFileChunk(this.fileObj, bytes, isLastChunk, this.doneHandler);
     },
 
     /**
@@ -1267,42 +1181,27 @@
      * @function
      * @returns {string} 'pending', 'uploading', 'success', 'error'
      */
-    status: function (isTest) {
-      if (this.pendingRetry || this.preprocessState === 1) {
-        // if pending retry then that's effectively the same as actively uploading,
-        // there might just be a slight delay before the retry starts
-        return 'uploading';
-      } else if (!this.xhr) {
-        return 'pending';
-      } else if (this.xhr.readyState < 4) {
-        // Status is really 'OPENED', 'HEADERS_RECEIVED'
-        // or 'LOADING' - meaning that stuff is happening
-        return 'uploading';
+    getStatus: function () {
+      if (this.currentStatus === 'success' || this.currentStatus === 'uploading' || this.currentStatus === 'error') {
+        return this.currentStatus;
+      } else if (this.pendingRetry || this.preprocessState === 1) {
+        return this.setStatus('uploading');
+      } else if (this.retries >= this.flowObj.opts.maxChunkRetries) {
+        // HTTP 415/500/501, permanent error
+        return this.setStatus('error');
       } else {
-        if (this.flowObj.opts.successStatuses.indexOf(this.xhr.status) > -1) {
-          // HTTP 200, perfect
-		      // HTTP 202 Accepted - The request has been accepted for processing, but the processing has not been completed.
-          return 'success';
-        } else if (this.flowObj.opts.permanentErrors.indexOf(this.xhr.status) > -1 ||
-            !isTest && this.retries >= this.flowObj.opts.maxChunkRetries) {
-          // HTTP 415/500/501, permanent error
-          return 'error';
-        } else {
-          // this should never happen, but we'll reset and queue a retry
-          // a likely case for this would be 503 service unavailable
-          this.abort();
-          return 'pending';
-        }
+        return 'pending';
       }
     },
 
     /**
-     * Get response from xhr request
-     * @function
-     * @returns {String}
+     * Set chunk upload status
+     * @param status
+     * @returns {string} currentStatus
      */
-    message: function () {
-      return this.xhr ? this.xhr.responseText : '';
+    setStatus: function(status) {
+      this.currentStatus = status;
+      return this.currentStatus;
     },
 
     /**
@@ -1314,15 +1213,9 @@
       if (this.pendingRetry) {
         return 0;
       }
-      var s = this.status();
-      if (s === 'success' || s === 'error') {
-        return 1;
-      } else if (s === 'pending') {
-        return 0;
-      } else {
-        return this.total > 0 ? this.loaded / this.total : 0;
-      }
+      return this.getStatus() === 'success' ? 1 : 0;
     },
+
 
     /**
      * Count total size uploaded
@@ -1331,54 +1224,10 @@
      */
     sizeUploaded: function () {
       var size = this.endByte - this.startByte;
-      // can't return only chunk.loaded value, because it is bigger than chunk size
-      if (this.status() !== 'success') {
-        size = this.progress() * size;
+      if (this.getStatus() !== 'success') {
+        size = 0;
       }
       return size;
-    },
-
-    /**
-     * Prepare Xhr request. Set query, headers and data
-     * @param {string} method GET or POST
-     * @param {bool} isTest is this a test request
-     * @param {string} [paramsMethod] octet or form
-     * @param {Blob} [blob] to send
-     * @returns {FormData|Blob|Null} data to send
-     */
-    prepareXhrRequest: function(method, isTest, paramsMethod, blob) {
-      // Add data from the query options
-      var query = evalOpts(this.flowObj.opts.query, this.fileObj, this, isTest);
-      query = extend(this.getParams(), query);
-
-      var target = evalOpts(this.flowObj.opts.target, this.fileObj, this, isTest);
-      var data = null;
-      if (method === 'GET' || paramsMethod === 'octet') {
-        // Add data from the query options
-        var params = [];
-        each(query, function (v, k) {
-          params.push([encodeURIComponent(k), encodeURIComponent(v)].join('='));
-        });
-        target = this.getTarget(target, params);
-        data = blob || null;
-      } else {
-        // Add data from the query options
-        data = new FormData();
-        each(query, function (v, k) {
-          data.append(k, v);
-        });
-        data.append(this.flowObj.opts.fileParameterName, blob, this.fileObj.file.name);
-      }
-
-      this.xhr.open(method, target, true);
-      this.xhr.withCredentials = this.flowObj.opts.withCredentials;
-
-      // Add data from header options
-      each(evalOpts(this.flowObj.opts.headers, this.fileObj, this, isTest), function (v, k) {
-        this.xhr.setRequestHeader(k, v);
-      }, this);
-
-      return data;
     }
   };
 
