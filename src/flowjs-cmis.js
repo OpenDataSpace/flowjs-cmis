@@ -1084,23 +1084,31 @@
      * Upload has stopped
      */
     this.doneHandler = function(status, response) {
-      $.currentStatus = status;
+      $.setStatus(status);
       var message = response ? response.text : "OK";
-      if (status === 'success' || status === 'error') {
+      if (status === 'success') {
         $.event(status, message);
         $.flowObj.uploadNextChunk();
-      } else {
-        $.event('retry', message);
-        $.pendingRetry = true;
-        $.retries++;
-        var retryInterval = $.flowObj.opts.chunkRetryInterval;
-        if (retryInterval !== null) {
-          setTimeout(function () {
-            $.send();
-          }, retryInterval);
-        } else {
-          $.send();
+      } else if (status === 'chunkError') {
+        if ($.retries >= $.flowObj.opts.maxChunkRetries) {
+          $.fileObj.pause();
         }
+        else {
+          $.event('retry', message);
+          $.pendingRetry = true;
+          $.retries++;
+          var retryInterval = $.flowObj.opts.chunkRetryInterval;
+          if (retryInterval !== null) {
+            setTimeout(function () {
+              $.send();
+            }, retryInterval);
+          } else {
+            $.send();
+          }
+        }
+      } else if (status === 'fileError') {
+        $.event('retry', 'restart file uploading');
+        $.fileObj.retry();
       }
     };
   }
@@ -1169,26 +1177,44 @@
     /**
      * Append file chunk bytes using cmis
      * @param bytes
+     * @param reseted
      */
-    appendFileChunk: function(bytes) {
+    appendFileChunk: function(bytes, reseted) {
+      if (this.startByte === 0 && !reseted) {
+        this.resetFileContent(bytes);
+        return;
+      }
       this.setStatus('uploading');
-      var isLastChunk = false;//this.fileObjSize === this.endByte;
-      this.flowObj.cmisConnector.appendFileChunk(this.fileObj, bytes, isLastChunk, this.doneHandler);
+      var fileChunk = this;
+      var isLastChunk = true;//this.fileObjSize === this.endByte;
+      this.flowObj.cmisConnector.appendFileChunk(fileChunk, bytes, isLastChunk, this.doneHandler);
+    },
+
+    /**
+     * Resets content of a file if currently uploading first chunk
+     * @param bytes
+     */
+    resetFileContent: function(bytes) {
+      this.flowObj.cmisConnector.resetFileContent(this.fileObj, function(status) {
+        if (status === 'success') {
+          this.appendFileChunk(bytes, true);
+        }
+        else {
+          this.doneHandler(status);
+        }
+      }.bind(this));
     },
 
     /**
      * Retrieve current chunk upload status
      * @function
-     * @returns {string} 'pending', 'uploading', 'success', 'error'
+     * @returns {string} 'pending', 'uploading', 'success', 'chunkError', 'fileError'
      */
     getStatus: function () {
-      if (this.currentStatus === 'success' || this.currentStatus === 'uploading' || this.currentStatus === 'error') {
+      if (this.currentStatus === 'success' || this.currentStatus === 'uploading' || this.currentStatus === 'fileError' || this.currentStatus === 'chunkError') {
         return this.currentStatus;
       } else if (this.pendingRetry || this.preprocessState === 1) {
         return this.setStatus('uploading');
-      } else if (this.retries >= this.flowObj.opts.maxChunkRetries) {
-        // HTTP 415/500/501, permanent error
-        return this.setStatus('error');
       } else {
         return 'pending';
       }
