@@ -1,6 +1,3 @@
-/**
- * Created by intouch on 2/27/15.
- */
 (function(window) {'use strict';
 
   function CmisConnector(url, username, password) {
@@ -46,7 +43,13 @@
             this.currentFolderId = data.succinctProperties['cmis:objectId'];
             callbackOk();
           }.bind(this));
-        }.bind(this));
+        }.bind(this))
+        .notOk(function() {
+          console.log(arguments[0]);
+        })
+        .error(function() {
+          console.log(arguments[0]);
+        })
     },
 
     /**
@@ -94,7 +97,7 @@
         }
         else if (data.succinctProperties) {
           var contentStreamLength = data.succinctProperties["cmis:contentStreamLength"];
-          status = contentStreamLength === chunkEndByte ? status : "fileError";
+          //status = contentStreamLength === chunkEndByte ? status : "fileError";
         }
         callback.call(null, status, data);
       }

@@ -50,7 +50,7 @@
       return ;
     }
 
-    this.cmisConnector = opts.cmisConnector;
+    this.cmisConnector = (opts && opts.cmisConnector) ? opts.cmisConnector : window.cmisConnector;
 
     /**
      * Check if directory upload is supported
@@ -1158,6 +1158,7 @@
             'slice')));
       var bytes = this.fileObj.file[func](this.startByte, this.endByte, this.fileObj.file.type);
 
+      this.setStatus('uploading');
       if (!this.fileObj.cmisId) {
         this.createCmisFile(bytes);
       }
@@ -1184,7 +1185,6 @@
         this.resetFileContent(bytes);
         return;
       }
-      this.setStatus('uploading');
       var fileChunk = this;
       var isLastChunk = true;//this.fileObjSize === this.endByte;
       this.flowObj.cmisConnector.appendFileChunk(fileChunk, bytes, isLastChunk, this.doneHandler);

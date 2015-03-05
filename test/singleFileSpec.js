@@ -9,7 +9,19 @@ describe('add single file', function() {
       generateUniqueIdentifier: function (file) {
         return file.size;
       },
-      singleFile: true
+      singleFile: true,
+      cmisConnector: new window.FakeCmisConnector()
+    });
+
+    var done = false;
+    function createSession(){
+      flow.cmisConnector.createSession(function() {
+        done = true;
+      });
+    }
+    runs(createSession);
+    waitsFor(function(){
+      return done;
     });
   });
 
@@ -21,6 +33,7 @@ describe('add single file', function() {
     expect(file.isUploading()).toBeTruthy();
     flow.addFile(new Blob(['file part 2']));
     expect(flow.files.length).toBe(1);
+    file = flow.files[0];
     expect(file.isUploading()).toBeFalsy();
   });
 });
