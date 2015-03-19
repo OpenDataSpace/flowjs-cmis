@@ -55,14 +55,13 @@
     /**
      * Create CmisJS file
      * @param flowFile
-     * @param chunkContent
      * @param callback
      */
-    createFile: function(flowFile, chunkContent, callback) {
+    createFile: function(flowFile, callback) {
       var access = {};
       var type = flowFile.type || 'text/plain';
       access[this.username] = ['cmis:read'];
-      this.session.createDocument(this.currentFolderId, chunkContent, flowFile.name, type, undefined, undefined, access, null, null)
+      this.session.createDocument(this.currentFolderId, undefined, flowFile.name, type, undefined, undefined, access, null, null)
         .ok(function (data) {
           flowFile.cmisId = data.succinctProperties['cmis:objectId'];
           callback.call(null, 'success', data);
@@ -80,7 +79,10 @@
      */
     appendFileChunk: function(flowChunk, chunkContent, isLastChunk, callback) {
       this.session.appendContentStream(flowChunk.fileObj.cmisId, chunkContent, isLastChunk, {})
-        .ok(checkFileStatus.bind(null, 'success', flowChunk.endByte, callback))
+        .ok(function(data) {
+          flowChunk.fileObj.cmisId = data.succinctProperties['cmis:objectId'];
+          checkFileStatus.call(null, 'success', flowChunk.endByte, callback, data);
+        })
         .notOk(checkFileStatus.bind(null, 'chunkError', flowChunk.endByte, callback))
         .error(checkFileStatus.bind(null, 'chunkError', flowChunk.endByte, callback));
 

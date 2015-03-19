@@ -1172,7 +1172,14 @@
      * @param bytes
      */
     createCmisFile: function(bytes) {
-      this.flowObj.cmisConnector.createFile(this.fileObj, bytes, this.doneHandler);
+      this.flowObj.cmisConnector.createFile(this.fileObj, function(status) {
+        if (status === 'success') {
+          this.appendFileChunk(bytes);
+        }
+        else {
+          this.doneHandler.apply(this, arguments);
+        }
+      }.bind(this));
     },
 
     /**
@@ -1186,7 +1193,7 @@
         return;
       }
       var fileChunk = this;
-      var isLastChunk = true;//this.fileObjSize === this.endByte;
+      var isLastChunk = (this.fileObjSize === this.endByte);
       this.flowObj.cmisConnector.appendFileChunk(fileChunk, bytes, isLastChunk, this.doneHandler);
     },
 
